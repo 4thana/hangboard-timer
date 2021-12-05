@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hangboard timer</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module">
+
+        const $ = document.querySelector.bind(document);
+
+        const form = $('form');
+        const ring = $('.ring');
+        const set = $('.set');
+        const rep = $('.rep');
+        const circle = $('circle');
+        const startStop = $('.start');
+        const left = $('.left');
+        const middle = $('.middle');
+        const right = $('.right');
+        const currentSession = $('.currentSession');
+        const sessionDuration = $('.sessionDuration');
+        const endTime = $('.endTime');
+
+        const preSessionCountdown = 10_000;
+
+        const state = {
+            sessionInProgress: false,
+            sessionStart: 0,
+            isBreak: false,
+            isSetBreak: false,
+            startTime: 0,
+            duration: 0,
+            minutes: 0,
+            seconds: 0,
+            set: 0,
+            rep: 0,
+            audioCtx: undefined,
+            gainNode: undefined,
+        };
+
+        const pad = (time) => String(time).padStart(2, '0');
+
+        const formatTime = (date) => `${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+
+        const renderSession = (timestamp) => {
+            currentSession.textContent = formatTime(new Date(timestamp - state.sessionStart));
+        }
+
+        const renderTime = (date) => {
+            if (date.getMinutes() > 0) {
+                left.textContent = pad(date.getMinutes());
+                middle.textContent = ':';
+                right.textContent = pad(date.getSeconds());
+            } else {
+                left.textContent = pad(date.getSeconds());
+                middle.textContent = '.';
+                right.textContent = pad(date.getMilliseconds()).slice(0, 2);
+            }
+        }
+
+        const renderCircle = () => {
+            ring.classList.toggle('break', state.isBreak);
+            circle.removeAttribute('stroke-dasharray');
+            set.textContent = `${state.set} / ${form.sets.value}`;
+            rep.textContent = `${state.rep} / ${form.reps.value}`;
+            startStop.innerHTML = state.sessionInProgress ? 'stop' : 'start';
+        }
+
+        const beep = (frequency = 440, duration = 0.3, start = 0, volume = 0.2, type = 'sine') => {
+            const oscillator = state.audioCtx.createOscillator();
+            oscillator.connect(state.gainNode);
+
+            state.gainNode.gain.value = volume;
+            oscillator.frequency.value = frequency;
+            oscillator.type = type;
+
+            oscillator.start(state.audioCtx.currentTime + start);
+            oscillator.stop(state.audioCtx.currentTime + start + duration);
+        };
+
+        const frame = (timestamp) => {
+            const elapsed = timestamp - state.startTime;
+            const countdownMs = state.duration - elapsed;
+            const countdownDate = new Date(countdownMs);
+            const currentSeconds = countdownDate.getSeconds();
+
+            renderTime(countdownDate);
+
+            if (currentSeconds !== state.seconds) {
+                state.seconds = currentSeconds;
+                renderSession(timestamp);
+
+                if (state.isSetBreak && countdownMs < 10_000 && countdownMs > 0 ||
+                    state.isBreak && countdownMs < 3_000 && countdownMs > 0) {
+                    beep();
+                }
+            }
+            const ratio = elapsed / state.duration;
+            circle.setAttribute('stroke-dasharray', [ratio * 1596, 1596].join());
+
+            if (countdownMs < 0 || !state.sessionInProgress) {
+                state.resolve();
+            } else {
+                window.requestAnimationFrame(frame);
+            };
+        };
+
+        const startTimer = (milliseconds = 0, isBreak = true) => {
+            return new Promise((resolve) => {
+                if (!state.sessionInProgress) {
+                    throw new Error('session stopped');
+                };
+                if (!milliseconds) {
+                    return;
+                }
+                state.resolve = resolve;
+                state.duration = milliseconds;
+                state.isBreak = isBreak;
+                state.startTime = performance.now();
+
+                renderCircle();
+                if (!state.isBreak) {
+                    beep(880, 0.2);
+                }
+                window.requestAnimationFrame(frame);
+            });
+        };
+
+        const startSession = async () => {
+            if (!state.audioCtx) {
+                state.audioCtx = new window.AudioContext();
+                state.gainNode = state.audioCtx.createGain();
+                state.gainNode.connect(state.audioCtx.destination);
+            }
+            state.sessionInProgress = true;
+            state.sessionStart = performance.now();
+            calcSession();
+            form.setFields.disabled = true;
+            form.repFields.disabled = true;
+
+            try {
+                await startTimer(preSessionCountdown);
+
+                for (state.set = 1; state.set <= form.sets.value; state.set++) {
+                    for (state.rep = 1; state.rep <= form.reps.value; state.rep++) {
+                        await startTimer(form.repDuration.value * 1_000, false);
+                        if (state.rep < form.reps.value) {
+                            await startTimer(form.repBreak.value * 1_000);
+                        }
+                    }
+                    state.rep = 0;
+                    beep(220, 0.7);
+                    if (state.set < form.sets.value) {
+                        state.isSetBreak = true;
+                        await startTimer(form.setBreak.value * 60_000);
+                        state.isSetBreak = false;
+                    }
+                }
+            } catch (err) { }
+
+            form.setFields.disabled = false;
+            form.repFields.disabled = false;
+            state.sessionInProgress = false;
+            state.set = 0;
+            state.rep = 0;
+            state.isBreak = false;
+            renderCircle();
+            renderTime(new Date(preSessionCountdown));
+            renderSession(state.sessionStart);
+        }
+
+        const stopSession = () => {
+            state.sessionInProgress = false;
+        };
+
+        const toggleSession = () => state.sessionInProgress ? stopSession() : startSession();
+
+        const handleKeys = (e) => {
+            switch (e.key) {
+                case 'Enter': startSession(); break;
+                case 'Escape': stopSession(); break;
+                default: console.log('unhandled key: ', e.key);
+            }
+        }
+
+        const calcSession = () => {
+            const repDuration = Number(form.repDuration.value) * 1_000;
+            const repBreak = Number(form.repBreak.value) * 1_000;
+            const setBreak = Number(form.setBreak.value) * 60_000;
+
+            const setDuration = (repDuration + repBreak) * form.reps.value - repBreak;
+            const totalDuration = preSessionCountdown + (setDuration + setBreak) * form.sets.value - setBreak;
+            const endDate = new Date(Date.now() + totalDuration);
+
+            sessionDuration.textContent = formatTime(new Date(totalDuration));
+            endTime.textContent = `[ ${endDate.toLocaleTimeString('de')} ]`;
+        }
+
+        startStop.addEventListener('click', toggleSession);
+        document.addEventListener('keydown', handleKeys)
+        form.addEventListener('input', calcSession)
+        calcSession();
+        renderCircle();
+        renderTime(new Date(preSessionCountdown));
+        renderSession(0);
+    </script>
+</head>
+
+<body>
+    <h1>Hangboard Timer</h1>
+    <form>
+        <fieldset name="setFields">
+            <legend>Sets</legend>
+            <label><input name="sets" type="number" value="6" min="1" max="12" /></label>
+            <label>Rest: <input name="setBreak" type="number" value="4" min="1" max="20" /> minutes </label>
+        </fieldset>
+        <fieldset name="repFields">
+            <legend>Reps</legend>
+            <div>
+                <label><input name="reps" type="number" value="12" min="1" max="20" /> X </label>
+                <label><input name="repDuration" type="number" value="7" min="1" max="20" /> seconds </label>
+            </div>
+            <label>Rest: <input name="repBreak" type="number" value="3" min="1" max="20" /> seconds </label>
+        </fieldset>
+        <div class="session">Session: <span class="currentSession"></span> / <span class="sessionDuration"> </span><span
+                class="endTime"></span></div>
+        <button class="start" type="button">start</button>
+    </form>
+    <div class="wrapper">
+        <div class="ring">
+            <svg width="518" height="518" viewBox="0 0 518 518">
+                <circle stroke-width="9px" x="0" y="y" cx="259" cy="259" r="254" />
+            </svg>
+        </div>
+        <div class="timer">
+            <div class="repset">Rep: <span class="rep"></span></div>
+            <div class="time">
+                <div class="left"></div>
+                <div class="middle"></div>
+                <div class="right"></div>
+            </div>
+            <div class="repset">Set: <span class="set"></span></div>
+        </div>
+    </div>
+</body>
+
+</html>
